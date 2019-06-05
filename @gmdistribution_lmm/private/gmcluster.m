@@ -294,16 +294,17 @@ for iter = 1:options.MaxIter
            [ll,post] = estep(log_lh);
         end
         % Update the random effects sigma
+        oldSigmaEff = S.Sigma_eff;
         for j = 1:k
             sub_bhi = reshape( S.bhi(j,:,:), d, s );
             %% MINE
-            S.Sigma_eff(:,:,j) = sub_bhi * sub_bhi' / s;
+            %S.Sigma_eff(:,:,j) = sub_bhi * sub_bhi' / s;
             
             %% NG
-            if min(eig(S.Sigma_eff(:,:,j))) < 1e-5
-                invSe = zeros( size( S.Sigma_eff(:,:,j) ) );
+            if min(eig(oldSigmaEff(:,:,j))) < 1e-5
+                invSe = zeros( size( oldSigmaEff(:,:,j) ) );
             else
-                invSe = inv(S.Sigma_eff(:,:,j));
+                invSe = inv(oldSigmaEff(:,:,j));
             end
             if min(eig(S.Sigma(:,:,j))) < 1e-5
                 invSj = zeros(size(S.Sigma(:,:,j)));
@@ -320,13 +321,15 @@ for iter = 1:options.MaxIter
                 niter = niter + ni;
             end
             S.Sigma_eff(:,:,j) = S.Sigma_eff(:,:,j) / s;
+
+            %% ZERO
+            %S.Sigma_eff = zeros( size( S.Sigma_eff ) );
         end
         
     catch ME
         if ~isequal(ME.identifier,'stats:gmdistribution:wdensity:IllCondCov')
             rethrow(ME);
         else
-            keyboard;
             m = message('stats:gmdistribution:IllCondCovIter',iter);
             throwAsCaller(MException(m.Identifier,'%s',getString(m)));
         end
@@ -349,17 +352,16 @@ for iter = 1:options.MaxIter
 %     end
     
     %% NG
-    
-%     ll = sum( sum( post.*log_lh ) );
-%     for j=1:k
-%         [L,f] = chol(S.Sigma_eff(:,:,j) );
-%         diagL = diag(L);
-%         
-%         if ~isempty(L)
-%             this_bhi = reshape( S.bhi(j,:,:), d, s );
-%             ll = ll - 0.5 * ( sum( sum( (this_bhi'/L).^2 ) ) + s*( 2*log(sum(diagL)) + d*log(2*pi) ) );
-%         endn
-%     end
+    ll = sum( sum( post.*log_lh ) );
+    for j=1:k
+        [L,f] = chol(S.Sigma_eff(:,:,j) );
+        diagL = diag(L);
+        
+        if ~isempty(L)
+            this_bhi = reshape( S.bhi(j,:,:), d, s );
+            ll = ll - 0.5 * ( sum( sum( (this_bhi'/L).^2 ) ) + s*( 2*log(sum(diagL)) + d*log(2*pi) ) );
+        end
+    end
     
     
     if options.Display > 2 %'iter'
@@ -381,6 +383,38 @@ for iter = 1:options.MaxIter
     oldSigma = S.Sigma;
     oldBhi = S.bhi;
 
+    % Update bhi
+    niter = 1;
+    for zz=1:s
+
+        X_sub = X{zz};
+        [ni,d] = size( X_sub );
+        for j=1:k
+            post_j = post( niter:(niter+ni-1), j );
+            % Ill-conditioned
+            if min(eig(oldSigmaEff(:,:,j))) < 1e-5
+                invSe = zeros( size( oldSigmaEff(:,:,j) ) );
+            else
+                invSe = inv(oldSigmaEff(:,:,j));
+            end
+            if min(eig(oldSigma(:,:,j))) < 1e-5
+                invSj = zeros(size(oldSigma(:,:,j)));
+            else
+                invSj = inv(oldSigma(:,:,j));
+            end
+            
+            %% MINE
+            %S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj + invSe ) * sum(post_j) ) )';
+            %% NG
+            S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj* sum(post_j) + invSe ) ) )';
+            %S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj * sum(post_j) + invSe ) ) )';
+            
+            %% ZERO
+            %S.bhi = zeros( size( S.bhi ) );
+        end
+        niter = niter + ni;
+    end    
+    
     if SharedCov %common covariance
         if CovType == 2  %full covariance
             S.Sigma = zeros(d,d,'like',X_sub);
@@ -434,10 +468,10 @@ for iter = 1:options.MaxIter
     else %different covariance
         for j = 1:k
             % Ill-conditioned
-            if min(eig(S.Sigma_eff(:,:,j))) < 1e-5
-                invSe = zeros( size( S.Sigma_eff(:,:,j) ) );
+            if min(eig(oldSigmaEff(:,:,j))) < 1e-5
+                invSe = zeros( size( oldSigmaEff(:,:,j) ) );
             else
-                invSe = inv(S.Sigma_eff(:,:,j));
+                invSe = inv(oldSigmaEff(:,:,j));
             end
             if min(eig(oldSigma(:,:,j))) < 1e-5
                 invSj = zeros(size(oldSigma(:,:,j)));
@@ -448,53 +482,61 @@ for iter = 1:options.MaxIter
             X_corrected = zeros( size( X_data ) );
             Xcentered = zeros( size( X_data ) );
             niter = 1;
+            if S.PComponents(j) == 0 
+                %When the small posterior probablities are set to zero,
+                % it's possilble to get a cluster with zero prior.
+                % For cluster with zero prior, we keep its mean and
+                % covariance unchanged in the following iterations.
+                continue;
+            end
             for zz=1:s
 
                 X_sub = X{zz};
                 [ni,d] = size( X_sub );
-                if S.PComponents(j) == 0 
-                        %When the small posterior probablities are set to zero,
-                        % it's possilble to get a cluster with zero prior.
-                        % For cluster with zero prior, we keep its mean and
-                        % covariance unchanged in the following iterations.
-                        continue;
-                end
+
                 X_corrected((niter:(niter+ni-1)),:) = ( X_sub - oldBhi(j,:,zz) );
-                Xcentered((niter:(niter+ni-1)),:) = X_sub - oldMu(j,:) - oldBhi(j,:,zz);
                 niter = niter + ni;
             end
             post_j = post(:,j)';
             nz_idx = post_j>0;
             S.mu(j,:) = post_j * X_corrected / S.PComponents(j);
 
-            if sum(nz_idx) < th
-                %For efficency, if post_j has less than 40% non-zero values,
-                %get centered X corresponding to the observations with those
-                %non-zero values for component j.
-                Xcentered = Xcentered(nz_idx,:);
-                post_j = post_j(nz_idx);
-            end
-
             %% THIS ONE
             if CovType == 2
+                niter = 1;
+                for zz=1:s
+
+                    X_sub = X{zz};
+                    [ni,d] = size( X_sub );
+                    Xcentered((niter:(niter+ni-1)),:) = X_sub - S.mu(j,:) - oldBhi(j,:,zz);
+                    niter = niter + ni;
+                end
                 
                 %% MINE
-                Xcentered = sqrt(post_j').* Xcentered;
-                S.Sigma(:,:,j) = (Xcentered'*Xcentered)/S.PComponents(j) + regVal;
+                %Xcentered = sqrt(post_j').* Xcentered;
+                %S.Sigma(:,:,j) = (Xcentered'*Xcentered)/S.PComponents(j) + regVal;
+                
                 %% NG
                 
-%                 S.Sigma(:,:,j) = zeros(d,d);
-%                 curr_i = 1;
-%                 niter = 1;
-%                 for zz=1:s
-%                     [ni,d] = size( X{zz} );
-%                     post_j2 = post(niter:(niter+ni-1),j);
-%                     S.Sigma(:,:,j) = S.Sigma(:,:,j) + post_j(curr_i) * ( Xcentered(curr_i,:)' * Xcentered(curr_i,:) + inv( sum(post_j2)*invSj + invSe ) );
-%                     curr_i = curr_i + 1;
-%                     niter = niter + ni;
-%                     %(Xcentered'*Xcentered + inv(invSe + invSj*sum(post_j))) / S.PComponents + regVal;
-%                 end
-%                 S.Sigma(:,:,j) = S.Sigma(:,:,j) / S.PComponents(j) + regVal;
+                S.Sigma(:,:,j) = zeros(d,d);
+                curr_i = 1;
+                niter = 1;
+                for zz=1:s
+                    [ni,d] = size( X{zz} );
+                    post_j2 = post(niter:(niter+ni-1),j);
+                    
+                    %% ZERO
+                    sumInv = inv( sum(post_j2)*invSj + invSe );
+                    %sumInv = zeros(d,d);
+                    
+                    for qq=1:ni
+                        S.Sigma(:,:,j) = S.Sigma(:,:,j) + post_j(curr_i) * ( Xcentered(curr_i,:)' * Xcentered(curr_i,:) + sumInv );
+                        curr_i = curr_i + 1;
+                    end
+                    niter = niter + ni;
+                    %(Xcentered'*Xcentered + inv(invSe + invSj*sum(post_j))) / S.PComponents + regVal;
+                end
+                S.Sigma(:,:,j) = S.Sigma(:,:,j) / S.PComponents(j) + regVal;
                 
                 
             else % diagonal covariance
@@ -503,38 +545,8 @@ for iter = 1:options.MaxIter
         end
     end
     
-    % Update bhi
-    niter = 1;
-    for zz=1:s
-
-        X_sub = X{zz};
-        [ni,d] = size( X_sub );
-        for j=1:k
-            post_j = post( niter:(niter+ni-1), j );
-            % Ill-conditioned
-            if min(eig(S.Sigma_eff(:,:,j))) < 1e-5
-                invSe = zeros( size( S.Sigma_eff(:,:,j) ) );
-            else
-                invSe = inv(S.Sigma_eff(:,:,j));
-            end
-            if min(eig(oldSigma(:,:,j))) < 1e-5
-                invSj = zeros(size(oldSigma(:,:,j)));
-            else
-                invSj = inv(oldSigma(:,:,j));
-            end
-            
-            %% MINE
-            %S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj - invSe ) * sum(post_j) ) )';
-            %% NG
-            S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj* sum(post_j) + invSe ) ) )';
-            %S.bhi(j,:,zz) = ( post_j' * ( X_sub - oldMu(j,:) ) * invSj * inv( ( invSj * sum(post_j) + invSe ) ) )';
-        end
-        niter = niter + ni;
-    end
-    
     % normalize PComponents
     S.PComponents = S.PComponents/sum(S.PComponents);
-    keyboard;
 
 end %end iter loop
 optimInfo.Iters = iter;

@@ -75,12 +75,13 @@ function   [log_lh,mahalaD]=wdensity(X, mu, Sigma, p, sharedCov, CovType, bhi)
                  log_lh(i:(i+ni-1),j) = sum(((X_sub - mu(j,:) - bhi(j,:,zz))./L).^2, 2); 
             end
 
-            if nargout > 1
-                 mahalaD(:,j) = log_lh(:,j);
-            end
-            log_lh(:,j) = -0.5*(log_lh(:,j) + logDetSigma);
             i = i + ni;
         end
+
+        if nargout > 1
+             mahalaD(:,j) = log_lh(:,j);
+        end
+        log_lh(:,j) = -0.5*(log_lh(:,j) + logDetSigma);
     end
     %log_lh is a N by K matrix, log_lh(i,j) is log \alpha_j(x_i|\theta_j)
     log_lh = log_lh + log_prior - d*log(2*pi)/2;

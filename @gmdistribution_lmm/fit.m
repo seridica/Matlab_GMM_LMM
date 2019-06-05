@@ -140,7 +140,7 @@ try
         end
 
     end
-    nParam = nParam + k-1 + k * obj.NDimensions;
+    nParam = nParam + k-1 + k * obj.NDimensions + s*k*obj.NDimensions;
     obj.BIC = 2*NlogL + nParam*log(n);
     obj.AIC = 2*NlogL + 2*nParam;
 
